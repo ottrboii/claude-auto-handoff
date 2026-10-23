@@ -140,12 +140,28 @@ export function hasUnansweredLastRequest(text: string): boolean {
   return /\bStatus[\s*_`]*:[\s*_`"]*(Not (?:yet |fully )?answered|Partially answered|Unanswered)/i.test(section)
 }
 
+// Sections the next session rarely needs up front. They go to a details file it reads on
+// demand, so every seeded session does not pay to read them.
+export const DETAIL_SECTIONS = ['Key Assumptions to Verify', 'Questions Answered', 'Dead Ends', 'GitHub Issues']
+
+/** Haiku's brief split into what the next session reads first and the on-demand details. */
+export function splitDetails(text: string, sections: readonly string[] = DETAIL_SECTIONS): { main: string; details: string } {
+  const parts = text.split(/^(?=## )/m)
+  const isDetail = (p: string) => sections.some(s => p.startsWith(`## ${s}`))
+  return {
+    main: parts.filter(p => !isDetail(p)).join('').trim(),
+    details: parts.filter(isDetail).join('').trim(),
+  }
+}
+
 export type BriefContext = {
   sessionId: string
   /** The session's transcript file. */
   transcript: string
   /** The instructions template, rendered at the top of the brief. */
   instructions: string
+  /** The details file, when the brief has detail sections. */
+  details?: string
 }
 
 export function assembleBrief(ctx: BriefContext, facts: Facts, haiku: string | undefined): string {
@@ -154,10 +170,10 @@ export function assembleBrief(ctx: BriefContext, facts: Facts, haiku: string | u
 ## Session Handoff Brief
 
 - **Previous Session:** ${ctx.sessionId}
-- **Transcript:** \`${ctx.transcript}\`
+- **Transcript:** \`${ctx.transcript}\`${ctx.details ? `\n- **Details:** \`${ctx.details}\` (assumptions to verify, questions answered, dead ends, issues)` : ''}
 
 ## How to Use This Brief
-${haiku ? 'Haiku wrote the judgment sections from conversation text with tool output abbreviated. The facts sections came from tool calls in code.' : 'Haiku did not return a usable brief, so this holds only facts extracted in code. Read the transcript for the rest.'} Treat every line as a starting point, not a fact. Before acting on anything here, spawn a subagent to verify: run git status, gh pr view, or Read the file directly. If a fact is missing, grep the transcript before asking the user.`
+${haiku ? 'Haiku wrote the judgment sections from conversation text with tool output abbreviated. The facts sections came from tool calls in code.' : 'Haiku did not return a usable brief, so this holds only facts extracted in code. Read the transcript for the rest.'} Treat every line as a starting point, not a fact. Check directly, with one Read, git status or gh pr view, only the facts your next step acts on. Spawn a subagent to verify only when facts here conflict, or before a step that is hard to undo (merge, push, deploy, delete). If a fact is missing, read the details file, then grep the transcript (never read it whole), before asking the user.`
   // A valid Haiku brief already quotes the last request in its own section.
   return [header, haiku?.trim(), factsBlock(facts, !haiku)].filter(Boolean).join('\n\n')
 }

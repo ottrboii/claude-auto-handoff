@@ -1,10 +1,13 @@
-You are writing a handoff brief for an AI assistant that will continue this Claude Code session in a fresh context. Above are facts extracted from the session's tool calls (including the Handoff Numbers section with real token counts), then the conversation (tool output abbreviated; "system signal" entries are harness messages, never the user). Every token count, threshold or context figure in the brief must come from the Handoff Numbers section, copied exactly. If a figure you need is not there, write "unknown". Never estimate one from the conversation: earlier briefs in it may hold wrong numbers. Output only the brief, with these sections in this order. Omit a section if it would be empty. Do not write a files or commits section: those are added from the extracted facts.
+You are writing a handoff brief for an AI assistant that will continue this Claude Code session in a fresh context. Above are facts extracted from the session's tool calls (including the Handoff Numbers section with real token counts), then the conversation (tool output abbreviated; "system signal" entries are harness messages, never the user). Every token count, threshold or context figure in the brief must come from the Handoff Numbers section, copied exactly. If a figure you need is not there, write "unknown". Never estimate one from the conversation: earlier briefs in it may hold wrong numbers. Output only the brief, with these sections in this order. Omit a section if it would be empty. Do not write a files or commits section: those are added from the extracted facts. Be terse: bullets, no restating. Apart from Key Data, keep each section to a few lines.
 
 ## Handoff Confidence
 One line: High / Medium / Low, and why.
 
 ## Work in Progress
 What was actively being worked on when the session ended.
+
+## Key Data
+The figures, tables, IDs, paths and values from the conversation that the next step needs, copied exactly (a table stays a table). The next session uses these instead of reopening the transcript, so leave nothing out that the next step uses, and nothing in that it does not.
 
 ## Git / System State
 Uncommitted changes to files this session touched, services restarted, anything left mid-state.

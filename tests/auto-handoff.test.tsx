@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { On, SessionMessage } from 'claude-code'
-import { briefPrompt, extractFacts, factsBlock, hasUnansweredLastRequest, isValidBrief, markUnverifiedFigures } from '../hooks/brief.ts'
+import { briefPrompt, extractFacts, factsBlock, hasUnansweredLastRequest, isValidBrief, markUnverifiedFigures, splitDetails } from '../hooks/brief.ts'
 import { renderTemplate } from '../hooks/templates.ts'
 import { parseBrief } from '../hooks/viewer.ts'
 
@@ -442,6 +442,14 @@ describe('auto-handoff', () => {
     expect(prompt).toContain('- /repo/mod.ts')
     expect(prompt).toContain('## Questions Answered')
     expect(prompt.indexOf('## Extracted Facts')).toBeLessThan(prompt.indexOf('## Next Step'))
+  })
+
+  test('splitDetails moves the on-demand sections out and keeps the rest in order', async () => {
+    const text = '## Work in Progress\nA\n\n## Questions Answered\nQ\n\n## Key Data\nD\n\n## Dead Ends\nX\n\n## Next Step\nN'
+    const { main, details } = splitDetails(text)
+    expect(main).toBe('## Work in Progress\nA\n\n## Key Data\nD\n\n## Next Step\nN')
+    expect(details).toBe('## Questions Answered\nQ\n\n## Dead Ends\nX')
+    expect(splitDetails('## Next Step\nN').details).toBe('')
   })
 
   test('a /clear from the user without a pending handoff seeds nothing', async ($, on) => {

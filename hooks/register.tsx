@@ -1,5 +1,5 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
-import { assembleBrief, briefPrompt, extractFacts, isValidBrief, markUnverifiedFigures } from './brief.ts'
+import { assembleBrief, briefPrompt, extractFacts, isValidBrief, markUnverifiedFigures, splitDetails } from './brief.ts'
 import { chainOf, parseBrief, renderPage, viewerLink, withHeader } from './viewer.ts'
 import type { Entry } from './viewer.ts'
 import { SERVER_JS, parseAddress } from './server.ts'
@@ -224,13 +224,18 @@ async function handoff($: EngineInterface, sessionId: string, tokens: number, th
     if (!problem && checked.flagged.length) await log($, `brief figures not in Handoff Numbers session=${sessionId}: ${checked.flagged.join(', ')}`)
     const home = await homeDir($)
     const cwd = await $.session.cwd()
+    const briefDir = `${home}/${BRIEF_DIR}`
+    // Kept out of briefDir itself, where every .md is read as a brief.
+    const split = splitDetails(checked.text)
+    const detailsPath = !problem && split.details ? `${briefDir}/details/${sessionId}.md` : undefined
+    if (detailsPath) await $.fs.write(detailsPath, `# Handoff details for ${sessionId}\n\n${split.details}\n`)
     const brief = assembleBrief({
       sessionId,
       // Claude Code keeps transcripts under the cwd with every non-alphanumeric character as '-'.
       transcript: transcriptPath ?? `~/.claude/projects/${cwd.replace(/[^a-zA-Z0-9]/g, '-')}/${sessionId}.jsonl`,
       instructions: await template($, 'instructionsTemplate') || LAST_RESORT_INSTRUCTIONS,
-    }, facts, problem ? undefined : checked.text)
-    const briefDir = `${home}/${BRIEF_DIR}`
+      details: detailsPath,
+    }, facts, problem ? undefined : split.main)
     const briefPath = `${briefDir}/${sessionId}.md`
     const pagesDir = `${briefDir}/pages`
     const chain = own?.chain ?? sessionId
