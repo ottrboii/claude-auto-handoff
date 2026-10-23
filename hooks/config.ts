@@ -18,8 +18,15 @@ export const BRIEF_DIR = '.claude/state/auto-handoff'
 // that never count as edits.
 // viewer: where the mod serves the brief pages, "host:port"; "tailscale" as the host means this
 // machine's Tailscale IP, or 127.0.0.1 without Tailscale. Blank: no server, and the link is the local file.
-export type Config = { threshold: number; maxUnattended: number; briefTemplate: string; instructionsTemplate: string; ignoreFiles?: RegExp; viewer: string }
-export const DEFAULTS: Config = { threshold: 160_000, maxUnattended: 2, briefTemplate: '~/.claude/auto-handoff/brief.md', instructionsTemplate: '~/.claude/auto-handoff/instructions.md', viewer: 'tailscale:3846' }
+// idleMinutes / idleMinTokens: a prompt the person sends after idleMinutes, to a session of at least
+// idleMinTokens, hands off first and carries the prompt over. The prompt cache lasts an hour, so
+// resuming a big session after that re-reads its whole context uncached.
+// softCeiling / hardCeiling: the safety net for when no handoff fires (kill switch, loop guard, a
+// failed handoff). Past soft, the model is told once to say so and offer a handover. Past hard, a
+// turn the person did not start can only run the tools a handover needs.
+// 0 turns any of these off.
+export type Config = { threshold: number; maxUnattended: number; briefTemplate: string; instructionsTemplate: string; ignoreFiles?: RegExp; viewer: string; idleMinutes: number; idleMinTokens: number; softCeiling: number; hardCeiling: number }
+export const DEFAULTS: Config = { threshold: 160_000, maxUnattended: 2, briefTemplate: '~/.claude/auto-handoff/brief.md', instructionsTemplate: '~/.claude/auto-handoff/instructions.md', viewer: 'tailscale:3846', idleMinutes: 60, idleMinTokens: 100_000, softCeiling: 250_000, hardCeiling: 400_000 }
 export const MIN_HEADROOM = 40_000
 // Each template's default, a file in the mod's templates/ folder.
 export const TEMPLATES = [['briefTemplate', 'brief.md'], ['instructionsTemplate', 'instructions.md']] as const
@@ -33,6 +40,8 @@ export const expand = (path: string, home: string) => path.replace(/^~(?=\/|$)/,
 
 // A non-positive or non-numeric value falls back to the default rather than handing off at 0.
 const num = (v: unknown, fallback: number) => typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : fallback
+// The same, but 0 is kept: it switches the setting off.
+const numOrOff = (v: unknown, fallback: number) => v === 0 ? 0 : num(v, fallback)
 const str = (v: unknown, fallback: string) => typeof v === 'string' && v.trim() ? v.trim() : fallback
 // A bad pattern is dropped, not fatal: a typo in /config should not stop handoffs.
 function pattern(v: unknown): RegExp | undefined {
@@ -49,6 +58,10 @@ export function parseConfig(options: Record<string, unknown>): Config {
   instructionsTemplate: str(options.instructionsTemplate, DEFAULTS.instructionsTemplate),
   ignoreFiles: pattern(options.ignoreFiles),
   viewer: typeof options.viewer === 'string' ? options.viewer.trim() : DEFAULTS.viewer,
+  idleMinutes: numOrOff(options.idleMinutes, DEFAULTS.idleMinutes),
+  idleMinTokens: numOrOff(options.idleMinTokens, DEFAULTS.idleMinTokens),
+  softCeiling: numOrOff(options.softCeiling, DEFAULTS.softCeiling),
+  hardCeiling: numOrOff(options.hardCeiling, DEFAULTS.hardCeiling),
   }
 }
 

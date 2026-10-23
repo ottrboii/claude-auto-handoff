@@ -1,6 +1,6 @@
 {
   "name": "auto-handoff",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "description": "Hands a Claude Code session off to a fresh one before the context fills: a Haiku-written brief, /clear, and a seed that points the new session at the brief.",
   "author": {
     "name": "Alex Hillman",
@@ -44,6 +44,30 @@
       "title": "Viewer address",
       "description": "Where the mod serves a readable page for each brief, as host:port. \"tailscale\" as the host means this machine's Tailscale IP, so only your tailnet can open it; without Tailscale it serves on 127.0.0.1. Leave blank for no server; the link is then the local file.",
       "default": "tailscale:3846"
+    },
+    "idleMinutes": {
+      "type": "number",
+      "title": "Idle handoff after (minutes)",
+      "description": "A message you send after this long idle hands off to a fresh session first and carries your message over, when the session is at least the size below. The prompt cache lasts an hour, so resuming a big session later re-reads all of it at full price. 0 turns this off.",
+      "default": 60
+    },
+    "idleMinTokens": {
+      "type": "number",
+      "title": "Idle handoff from (tokens)",
+      "description": "Smallest context the idle handoff applies to. Below it, resuming is cheap enough. 0 means any size.",
+      "default": 100000
+    },
+    "softCeiling": {
+      "type": "number",
+      "title": "Soft ceiling (tokens)",
+      "description": "Past this, when no handoff has fired, the model is told once to say so and offer a handover. 0 turns this off.",
+      "default": 250000
+    },
+    "hardCeiling": {
+      "type": "number",
+      "title": "Hard ceiling (tokens)",
+      "description": "Past this, a turn you did not start (a handoff seed, a notification, a queued message) can only run Read, Write, Edit, Glob, Grep and Skill, enough to write a handover. A message you send lifts it for that turn. 0 turns this off.",
+      "default": 400000
     }
   }
 }

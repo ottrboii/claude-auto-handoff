@@ -22,7 +22,9 @@ const CHARS_PER_TOKEN = 4
 const LOG = `~/${BRIEF_DIR}/auto-handoff.log`
 
 // problem: why the brief is facts only, when Haiku's summary was unusable.
-type Pending = { oldSession: string; briefPath: string; tokens: number; chain: string; link: string; problem?: string }
+// idle: set when an idle resume started the handoff; its prompt rides along in the seed.
+type Idle = { minutes: number; text: string }
+type Pending = { oldSession: string; briefPath: string; tokens: number; chain: string; link: string; problem?: string; idle?: Idle }
 
 
 
@@ -51,6 +53,11 @@ let unmeasured = 0
 let gated: string | undefined
 // From the latest SessionStart; /clear starts a new transcript file.
 let transcriptPath: string | undefined
+// Whether the person started the running turn. Past the hard ceiling only such a turn runs every
+// tool. Unknown after a reload, so it starts true: a reload must not block a turn they started.
+let attended = true
+// The tools a handover needs; past the hard ceiling an unattended turn runs only these.
+const HANDOVER_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill'])
 
 // Windows sets USERPROFILE, not HOME. With HOME unset, every path built on it began with
 // "undefined/", which $.fs resolves under the session's working directory: briefs, templates
@@ -194,7 +201,7 @@ async function storedLineage($: EngineInterface, sessionId: string): Promise<Lin
   }
 }
 
-async function handoff($: EngineInterface, sessionId: string, tokens: number, threshold: number) {
+async function handoff($: EngineInterface, sessionId: string, tokens: number, threshold: number, idle?: Idle) {
   try {
     const own = sessionId === seededSession && lineage ? lineage : await storedLineage($, sessionId)
     const messages = await $.session.messages()
@@ -203,6 +210,7 @@ async function handoff($: EngineInterface, sessionId: string, tokens: number, th
     facts.handoffTokens = tokens
     facts.threshold = threshold
     facts.thresholdSource = threshold > base ? `${source} (${k(base)}), raised to leave ${k(MIN_HEADROOM)} above the starting size` : source
+    if (idle) facts.thresholdSource += `; this handoff was not the threshold: the person resumed after ${idle.minutes} min idle`
     if (sessionId === seededSession && floor !== undefined) facts.seededSessionStartSize = floor
     facts.unattendedCount = unattended
     // A session with no lineage starts its chain. One seeded before depth existed stays unknown.
@@ -242,7 +250,7 @@ async function handoff($: EngineInterface, sessionId: string, tokens: number, th
     const header = { from: own?.from, chain, depth: depth !== undefined ? String(depth) : undefined, tokens: String(tokens), at: new Date().toISOString(), cwd }
     await $.fs.write(briefPath, withHeader(header, brief))
     const link = await viewer($, briefDir, pagesDir, sessionId)
-    pending = { oldSession: sessionId, briefPath, tokens, chain, link, problem }
+    pending = { oldSession: sessionId, briefPath, tokens, chain, link, problem, idle }
     steps($, [briefStep(problem), { mark: 'spin', text: 'clearing' }])
     await $.store.set(`fired:${sessionId}`, problem ? `clearing-facts-only:${problem}` : 'clearing')
     await log($, `brief written ${briefPath} (${brief.length} chars); queueing /clear`)
@@ -262,7 +270,7 @@ async function handoff($: EngineInterface, sessionId: string, tokens: number, th
 
 // Shared by turn.complete and turn.step: the fired, kill-switch and loop-guard checks, then
 // the handoff itself. Returns true when a handoff started.
-async function tryHandoff($: EngineInterface, sessionId: string, tokens: number, threshold: number, via: string): Promise<boolean> {
+async function tryHandoff($: EngineInterface, sessionId: string, tokens: number, threshold: number, via: string, idle?: Idle): Promise<boolean> {
   const fired = await $.store.get(`fired:${sessionId}`)
   // Every caller checks inFlight first, so a 'briefing' marker seen here is an orphan: the
   // module reloaded mid-handoff and the brief never landed. Retry instead of going quiet.
@@ -292,10 +300,11 @@ async function tryHandoff($: EngineInterface, sessionId: string, tokens: number,
   gated = undefined
   await $.store.set(`fired:${sessionId}`, 'briefing')
   await log($, `threshold session=${sessionId} tokens=${tokens} threshold=${threshold} via=${via}`)
-  showPanel($, { header: { mark: 'spin', text: `auto-handoff · ${k(tokens)} / ${k(threshold)}` }, steps: [{ mark: 'spin', text: 'writing brief' }] },
-    `context ${k(tokens)} is past ${k(threshold)}: handing off`)
+  const header = idle ? `auto-handoff · ${k(tokens)} after ${idle.minutes} min idle` : `auto-handoff · ${k(tokens)} / ${k(threshold)}`
+  showPanel($, { header: { mark: 'spin', text: header }, steps: [{ mark: 'spin', text: 'writing brief' }] },
+    idle ? `idle ${idle.minutes} min at ${k(tokens)}: handing off, your message goes with it` : `context ${k(tokens)} is past ${k(threshold)}: handing off`)
   // Not awaited: the brief can take a while and /clear only runs once the session is idle.
-  handoff($, sessionId, tokens, threshold).finally(() => { inFlight = false })
+  handoff($, sessionId, tokens, threshold, idle).finally(() => { inFlight = false })
   return true
 }
 
@@ -431,9 +440,11 @@ export const register: Register = (on, options) => {
     try {
       if (!e.agentId) await keepServing($)
       if (e.agentId || inFlight || pending) return r // subagent turns fire turn.complete too
+      const sessionId = await $.session.id()
+      // In the store, not a module variable: the resume worth catching is often after a restart.
+      await $.store.set(`active:${sessionId}`, await $.clock.now())
       const tokens = (await $.session.usage()).context.tokens
       if (tokens === undefined) return r
-      const sessionId = await $.session.id()
       if (sessionId === seededSession && floor === undefined) {
         // Fallback only: turn.step sets the floor from the seed turn's first response. Reached
         // when that response carried no usage.
@@ -467,6 +478,11 @@ export const register: Register = (on, options) => {
           if (!inFlight && !pending) gated = sessionId
           await log($, `tool refused session=${sessionId} tool=${e.tool} projected=${projected} threshold=${threshold}`)
           return { deny: `[auto-handoff] Not run: the context is past the handoff threshold (${k(projected)} ≥ ${k(threshold)}). This session is handing off to a fresh one, which will redo this call. Make no more tool calls.` }
+        }
+        // No handoff will fire here (kill switch, loop guard, a failed one), and nobody is there.
+        if (cfg.hardCeiling > 0 && !attended && projected >= cfg.hardCeiling && !HANDOVER_TOOLS.has(e.tool)) {
+          await log($, `ceiling refused session=${sessionId} tool=${e.tool} projected=${projected} ceiling=${cfg.hardCeiling}`)
+          return { deny: `[auto-handoff] Not run: this session is at ${k(projected)}, past the ${k(cfg.hardCeiling)} hard ceiling, and the person has not sent a message since this turn began. Write a handover (Read, Write, Edit, Glob, Grep and Skill still run), then stop and say so. A message from the person lifts this for their turn.` }
         }
       } catch (err) {
         await log($, `tool.call gate error ${String(err)}`)
@@ -561,12 +577,42 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin && USER_ORIGINS.has(e.origin.kind)) {
+    const isUser = !!e.origin && USER_ORIGINS.has(e.origin.kind)
+    if (isUser) {
       unattended = 0
       if (pausedSession) hidePanel($) // the pause panel's "send a message to resume" is done
       pausedSession = undefined
     }
-    return next(e)
+    // A prompt delivered into a running turn leaves that turn's owner as it was.
+    if (!e.turnId) attended = isUser
+    if (e.command) return next(e)
+    const context: string[] = []
+    try {
+      const sessionId = await $.session.id()
+      const tokens = (await $.session.usage()).context.tokens
+      if (tokens !== undefined && !inFlight && !pending) {
+        // Idle resume: hand off and carry the prompt, rather than re-read a cold cache. Attachments
+        // cannot ride in the seed's text, so a prompt with any goes ahead here.
+        if (isUser && !e.turnId && !e.attachments?.length && cfg.idleMinutes > 0 && tokens >= cfg.idleMinTokens) {
+          const last = await $.store.get(`active:${sessionId}`)
+          const minutes = typeof last === 'number' ? Math.floor((await $.clock.now() - last) / 60_000) : 0
+          if (minutes >= cfg.idleMinutes && await canHandOff($, sessionId)
+            && await tryHandoff($, sessionId, tokens, await thresholdFor($, sessionId), `idle ${minutes}m`, { minutes, text: e.text })) {
+            return { drop: `[auto-handoff] Idle ${minutes} min at ${k(tokens)}: the prompt cache has expired, so this session hands off to a fresh one and your message goes with it.` }
+          }
+        }
+        if (cfg.hardCeiling > 0 && tokens >= cfg.hardCeiling) {
+          context.push(`[auto-handoff] This session is at ${k(tokens)}, past the ${k(cfg.hardCeiling)} hard ceiling. Unless this message says to continue in this session, write a handover and stop.`)
+        } else if (cfg.softCeiling > 0 && tokens >= cfg.softCeiling && !await $.store.get(`soft:${sessionId}`)) {
+          await $.store.set(`soft:${sessionId}`, tokens)
+          context.push(`[auto-handoff] This session is at ${k(tokens)}, past the ${k(cfg.softCeiling)} line. Say so in one line at the top of your reply, with whether this is a clean stopping point, and offer a handover to a fresh session.`)
+          addStep($, { mark: 'warn', text: `context ${k(tokens)} is past ${k(cfg.softCeiling)}: a fresh session would be cheaper` }, { mark: 'warn', text: 'auto-handoff' })
+        }
+      }
+    } catch (err) {
+      await log($, `prompt.submit error ${String(err)}`)
+    }
+    return next(context.length ? { ...e, context: [...(e.context ?? []), ...context] } : e)
   })
 
   on('classic.SessionStart', async ($, e, next) => {
@@ -606,7 +652,12 @@ export const register: Register = (on, options) => {
       }
       // One line on screen; the model reads the brief from disk. A full brief as the
       // seed showed up as a wall of text the person never wrote.
-      const text = `${SEED_PREFIX} ${short(p.oldSession)}. The previous session hit its context limit and was cleared. Read the brief at ${p.briefPath} before doing anything else${p.link ? ` (readable copy: ${p.link})` : ''} and follow its Instructions section. Open your first reply with the line "↪ Handoff from session ${short(p.oldSession)}".`
+      const opening = `Open your first reply with the line "↪ Handoff from session ${short(p.oldSession)}".`
+      const brief = `Read the brief at ${p.briefPath} before doing anything else${p.link ? ` (readable copy: ${p.link})` : ''}`
+      // The carried prompt is the person's, so it outranks the Instructions' "no one asked a question".
+      const text = p.idle
+        ? `${SEED_PREFIX} ${short(p.oldSession)}. The previous session sat idle for ${p.idle.minutes} min, so it was handed off rather than resumed on an expired cache. ${brief} for context, then answer the person's message below, which they sent to the previous session; it comes before the brief's Instructions. ${opening}\n\nTheir message:\n\n${p.idle.text}`
+        : `${SEED_PREFIX} ${short(p.oldSession)}. The previous session hit its context limit and was cleared. ${brief} and follow its Instructions section. ${opening}`
       $.prompt.submit({ text }).catch((err: unknown) => {
         handedFrom = undefined
         failed($, 'the seed prompt was rejected', `paste the brief path to carry on: ${p.briefPath}`)

@@ -106,6 +106,7 @@ The mod hot-reloads when you save while it's loaded with `--plugin-dir`.
 
 ## Changelog
 
+- **0.9.0** Idle resume: a message sent after an hour idle (`idleMinutes`) to a session of 100k or more (`idleMinTokens`) hands off first, and the message rides along in the seed, instead of re-reading the whole context after the prompt cache expired. Ceilings for when no handoff fires: past `softCeiling` (250k) the model is told once to say so and offer a handover; past `hardCeiling` (400k) a turn you did not start runs only Read, Write, Edit, Glob, Grep and Skill. 0 turns any of these off.
 - **0.8.6** On a machine without `sh` (Windows), the brief page is still written, and the link opens it as a local file instead of a server that never started. The viewer no longer shells out to `mkdir`.
 - **0.8.5** Windows support, from [@davidboomcycle](https://github.com/davidboomcycle) (#3). The mod falls back to `USERPROFILE` when `HOME` is unset, so briefs no longer land in `<project>/undefined/`. Where there is no `sh`, the log is written through `$.fs`. The tests pass on Windows. The viewer server still needs a POSIX shell.
 - **0.8.4** Any token figure in Haiku's brief that isn't in Handoff Numbers is marked `[unverified: not in Handoff Numbers]` and logged. The figure is marked, not removed.

@@ -4,8 +4,9 @@ import type { On, SessionMessage } from 'claude-code'
 import { briefPrompt, extractFacts, factsBlock, hasUnansweredLastRequest, isValidBrief, markUnverifiedFigures, splitDetails } from '../hooks/brief.ts'
 import { renderTemplate } from '../hooks/templates.ts'
 import { parseBrief } from '../hooks/viewer.ts'
+import { parseConfig } from '../hooks/config.ts'
 
-type Calls = { compacts: number; steps: number; cleared: number; seeded: string[]; written: Record<string, string>; completes: number; tokens: number; prompts: string[]; toasts: string[]; ran: number }
+type Calls = { compacts: number; steps: number; cleared: number; seeded: string[]; written: Record<string, string>; completes: number; tokens: number; prompts: string[]; toasts: string[]; ran: number; contexts: string[] }
 
 // The test runs sandboxed, with no file access, so these stand in for the files in templates/:
 // the same headings and switches, shorter prose.
@@ -57,7 +58,7 @@ const files = (written: Record<string, string>) => Object.keys(written).filter(p
 
 // The engine beneath the plugin: everything the mod calls, answered from memory.
 function engine(on: On, opts: { tokens: number; files?: Record<string, string>; env?: Record<string, string>; brief?: string | null; messages?: SessionMessage[]; toolChars?: number; streamToolChars?: number; store?: Record<string, unknown>; stepUsage?: boolean; surfaces?: ('terminal' | 'desktop' | 'mobile' | 'vscode')[]; noSh?: boolean }): Calls {
-  const calls: Calls = { compacts: 0, steps: 0, cleared: 0, seeded: [], written: {}, completes: 0, tokens: opts.tokens, prompts: [], toasts: [], ran: 0 }
+  const calls: Calls = { compacts: 0, steps: 0, cleared: 0, seeded: [], written: {}, completes: 0, tokens: opts.tokens, prompts: [], toasts: [], ran: 0, contexts: [] }
   let sessionId = 'old-session'
   let clears = 0
   mock.env(on, { HOME: '/home/test', ...(opts.env ?? {}) })
@@ -122,6 +123,7 @@ function engine(on: On, opts: { tokens: number; files?: Record<string, string>; 
   })
   on('prompt.submit', async (_$, e) => {
     calls.seeded.push(e.text)
+    calls.contexts.push(...(e.context ?? []))
     return { text: e.text }
   })
   on('classic.SessionStart', async () => ({}))
@@ -838,6 +840,63 @@ describe('auto-handoff', () => {
     await step($)
     expect(calls.steps).toBe(1)
     expect(calls.completes).toBe(0)
+  })
+
+  const typed = (text: string) => ({ text, origin: { kind: 'composer' } }) as never
+  const HOUR = 60 * 60_000
+
+  test('idle resume: a prompt after an hour hands off and rides along in the seed', async ($, on) => {
+    const calls = engine(on, { tokens: 120_000 })
+    await $.turn.complete(TURN)
+    await clock.advance(HOUR + 60_000)
+    const r = await $.prompt.submit(typed('what about the tests?'))
+    expect((r as { drop?: string }).drop).toContain('Idle 61 min')
+    expect(calls.seeded).toEqual([]) // the prompt never reached the old session
+    await settle(() => calls.cleared > 0)
+    await $.classic.SessionStart({ source: 'clear' })
+    await settle(() => calls.seeded.length > 0)
+    expect(calls.seeded[0]).toContain('sat idle for 61 min')
+    expect(calls.seeded[0]).toMatch(/Their message:\n\nwhat about the tests\?$/)
+  })
+
+  test('idle resume: a short gap or a small session resumes as usual', async ($, on) => {
+    const calls = engine(on, { tokens: 120_000 })
+    await $.turn.complete(TURN)
+    await clock.advance(30 * 60_000)
+    await $.prompt.submit(typed('short gap'))
+    calls.tokens = 50_000
+    await $.turn.complete(TURN)
+    await clock.advance(2 * HOUR)
+    await $.prompt.submit(typed('small session'))
+    await settle(() => false)
+    expect(calls.seeded).toEqual(['short gap', 'small session'])
+    expect(calls.cleared).toBe(0)
+  })
+
+  test('0 in /config turns idle handoff and the ceilings off; a bad value falls back', () => {
+    const c = parseConfig({ idleMinutes: 0, hardCeiling: 0, softCeiling: -5 })
+    expect([c.idleMinutes, c.hardCeiling, c.softCeiling]).toEqual([0, 0, 250_000])
+  })
+
+  test('soft ceiling: told once, in the context beside the prompt', async ($, on) => {
+    const calls = engine(on, { tokens: 260_000, env: { AUTO_HANDOFF_DISABLE: 'x' } })
+    await $.prompt.submit(typed('one'))
+    await $.prompt.submit(typed('two'))
+    expect(calls.contexts.length).toBe(1)
+    expect(calls.contexts[0]).toContain('past the 250k line')
+  })
+
+  test('hard ceiling: an unattended turn runs only handover tools; a typed prompt lifts it', async ($, on) => {
+    const calls = engine(on, { tokens: 410_000, env: { AUTO_HANDOFF_DISABLE: 'x' } })
+    await $.prompt.submit({ text: 'task done', origin: { kind: 'task-notification' } } as never)
+    const refused = await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    expect((refused as { deny?: string }).deny).toContain('hard ceiling')
+    await $.tool.call({ tool: 'Write', file_path: '/handover.md', content: 'x' } as never)
+    expect(calls.ran).toBe(1)
+    await $.prompt.submit(typed('continue in this session'))
+    expect(calls.contexts.at(-1)).toContain('past the 400k hard ceiling')
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    expect(calls.ran).toBe(2)
   })
 })
 
