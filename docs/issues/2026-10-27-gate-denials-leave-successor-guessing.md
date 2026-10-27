@@ -47,12 +47,25 @@ model's next batch of calls, then `turn.step` wrote the brief and cleared.
    session tried to save in that window is gone. If this is by design, the
    message should say the brief is already written rather than the generic text.
 
-5. **Threshold setting not in force (unverified cause).** `~/.claude/settings.json`
-   has `pluginConfigs.auto-handoff.threshold: 250000`, but every log line today
-   reads `threshold=160000` and `/handoff-threshold` reports the source as
-   "threshold in /config". No chain override file exists under
-   `~/.claude/state/auto-handoff`. Either `pluginConfigs` is not where the plugin
-   reads from, or the default wins over it.
+5. **`pending` denies a save between brief and clear** (see bug 4 above; kept as
+   its own number so the order below still reads).
+
+6. **The `threshold` setting is ignored (confirmed 2026-10-27).** Otto set
+   `pluginConfigs.auto-handoff.threshold: 250000` in `~/.claude/settings.json`,
+   which is where the README's Configure section says settings live. Every log
+   line today reads `threshold=160000`, and `/handoff-threshold` reports the
+   source as "threshold in /config", meaning `parseConfig` in `hooks/config.ts`
+   received no `threshold` in `options` and fell back to `DEFAULTS`. No chain
+   override file exists under `~/.claude/state/auto-handoff/overrides`. The
+   plugin is loaded through `CLAUDE_CODE_PLUGIN_DIRS` (a dev directory, plugin
+   name `auto-handoff`), not from a marketplace; the likeliest cause is that the
+   app keys `pluginConfigs` differently for a directory plugin, or passes no
+   options to it at all. Two things to check: what `options` contains at
+   `register()` for a directory plugin, and whether the key the app expects is
+   `auto-handoff@<marketplace>` rather than `auto-handoff`. Note also that 250k
+   equals the default `softCeiling`, so once the setting takes effect the soft
+   warning and the handoff would fire at the same line; `softCeiling` should move
+   up or the soft warning should be skipped when it is not below the threshold.
 
 ## Context that is not a bug, but shapes the fix
 
