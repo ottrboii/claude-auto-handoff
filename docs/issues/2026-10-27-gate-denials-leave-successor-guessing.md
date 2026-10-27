@@ -50,7 +50,18 @@ model's next batch of calls, then `turn.step` wrote the brief and cleared.
 5. **`pending` denies a save between brief and clear** (see bug 4 above; kept as
    its own number so the order below still reads).
 
-6. **The `threshold` setting is ignored (confirmed 2026-10-27).** Otto set
+6. **The `threshold` setting is ignored (confirmed 2026-10-27; resolved the
+   same day, 0.10.1).** Cause: the settings.json entry lacked the `options`
+   wrapper. The app passes `pluginConfigs.<key>.options` to the plugin, not
+   the key's own fields, so `threshold` written straight under `auto-handoff`
+   never reached `parseConfig`. The working entry is
+   `"pluginConfigs": { "auto-handoff": { "options": { "threshold": 250000, "viewer": "" } } }`;
+   the key for a `CLAUDE_CODE_PLUGIN_DIRS` plugin is the plain plugin name, no
+   marketplace suffix. Verified in a fresh session: `/handoff-threshold` reports
+   `250k (threshold in /config)`. The README now shows the entry, and the
+   soft-ceiling clash noted below is handled: the warning is skipped when the
+   threshold in force is at or below `softCeiling`. Original report follows.
+   Otto set
    `pluginConfigs.auto-handoff.threshold: 250000` in `~/.claude/settings.json`,
    which is where the README's Configure section says settings live. Every log
    line today reads `threshold=160000`, and `/handoff-threshold` reports the

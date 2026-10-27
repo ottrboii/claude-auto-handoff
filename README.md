@@ -46,7 +46,15 @@ To load it in every session, set `CLAUDE_CODE_PLUGIN_DIRS` to the folder in your
 
 ## Configure
 
-Every setting is a row in `/config` under auto-handoff. They're stored in `~/.claude/settings.json` under `pluginConfigs`.
+Every setting is a row in `/config` under auto-handoff. They're stored in `~/.claude/settings.json` under `pluginConfigs`, inside an `options` object under the plugin's key. A value written straight under the plugin key is ignored, and the mod falls back to its defaults without saying so. The key is the plain plugin name for a plugin loaded from a directory (`--plugin-dir`, `CLAUDE_CODE_PLUGIN_DIRS`) and `name@marketplace` for a marketplace install:
+
+```json
+"pluginConfigs": {
+  "auto-handoff": {
+    "options": { "threshold": 250000, "viewer": "" }
+  }
+}
+```
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -61,7 +69,9 @@ For one session, without a restart:
 
 - `/handoff-threshold 300k` sets the threshold for this session (also `1.2m` or `300000`). It is kept per handoff chain in `~/.claude/state/auto-handoff/overrides/<chain>.json`, so the sessions this one hands off to keep it. It wins over `AUTO_HANDOFF_TOKENS` and `threshold`, and the brief's Handoff Numbers name it as `session override`. A value closer than 30k to the model's window or `hardCeiling` is capped there, and the reply says so; it also says when the value is past `softCeiling`, or below the session's current size, in which case the next turn hands off.
 - `/handoff-threshold off` stops threshold and idle handoffs for the chain. The soft and hard ceilings still apply.
-- `/handoff-threshold reset` goes back to the configured value. `/handoff-threshold` alone shows the value in force and where it came from.
+- `/handoff-threshold reset` goes back to the configured value. `/handoff-threshold` alone shows the value in force and where it came from: `threshold in /config` when the setting is read, so a reply naming the default 160k after you set something else means the setting is not where the mod looks (see above).
+
+The soft ceiling (`softCeiling`, 250k) warns once when no handoff is coming. When the threshold in force is at or below it, the handoff fires first and the warning is skipped; it comes back when the chain is `off` or the mod is paused.
 
 Environment variables:
 
@@ -112,6 +122,7 @@ The mod hot-reloads when you save while it's loaded with `--plugin-dir`.
 
 ## Changelog
 
+- **0.10.1** Docs: settings live under `options` inside the plugin's `pluginConfigs` key (plain name for a directory plugin, `name@marketplace` otherwise); a value written straight under the key was silently ignored. The soft-ceiling warning is skipped when the threshold in force is at or below `softCeiling`, since the handoff fires first.
 - **0.10.0** `/handoff-threshold` sets, turns off, resets or shows the threshold for one session and the sessions it hands off to, capped 30k below the model's window and the hard ceiling.
 - **0.9.0** Idle resume: a message sent after an hour idle (`idleMinutes`) to a session of 100k or more (`idleMinTokens`) hands off first, and the message rides along in the seed, instead of re-reading the whole context after the prompt cache expired. Ceilings for when no handoff fires: past `softCeiling` (250k) the model is told once to say so and offer a handover; past `hardCeiling` (400k) a turn you did not start runs only Read, Write, Edit, Glob, Grep and Skill. 0 turns any of these off.
 - **0.8.6** On a machine without `sh` (Windows), the brief page is still written, and the link opens it as a local file instead of a server that never started. The viewer no longer shells out to `mkdir`.

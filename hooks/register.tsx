@@ -449,6 +449,13 @@ async function thresholdFor($: EngineInterface, sessionId: string): Promise<numb
   return sessionId === seededSession ? Math.max(base, (floor ?? 0) + MIN_HEADROOM) : base
 }
 
+// The soft ceiling is the net for when no handoff fires. With the threshold at or below it (a 250k
+// setting sits on the default soft line) the handoff fires at the same size or sooner, so the
+// warning would only duplicate it; it stays for a session the mod will not hand off.
+async function handoffFirst($: EngineInterface, sessionId: string): Promise<boolean> {
+  return await canHandOff($, sessionId) && await thresholdFor($, sessionId) <= cfg.softCeiling
+}
+
 // /handoff-threshold [300k | 1.2m | 300000 | off | reset]: sets, clears or shows the override for
 // this session's chain, and returns the reply. Bare, it shows the value in force and its source.
 async function thresholdCommand($: EngineInterface, args: string): Promise<string> {
@@ -680,7 +687,7 @@ export const register: Register = (on, options) => {
         }
         if (cfg.hardCeiling > 0 && tokens >= cfg.hardCeiling) {
           context.push(`[auto-handoff] This session is at ${k(tokens)}, past the ${k(cfg.hardCeiling)} hard ceiling. Unless this message says to continue in this session, write a handover and stop.`)
-        } else if (cfg.softCeiling > 0 && tokens >= cfg.softCeiling && !await $.store.get(`soft:${sessionId}`)) {
+        } else if (cfg.softCeiling > 0 && tokens >= cfg.softCeiling && !await $.store.get(`soft:${sessionId}`) && !await handoffFirst($, sessionId)) {
           await $.store.set(`soft:${sessionId}`, tokens)
           context.push(`[auto-handoff] This session is at ${k(tokens)}, past the ${k(cfg.softCeiling)} line. Say so in one line at the top of your reply, with whether this is a clean stopping point, and offer a handover to a fresh session.`)
           addStep($, { mark: 'warn', text: `context ${k(tokens)} is past ${k(cfg.softCeiling)}: a fresh session would be cheaper` }, { mark: 'warn', text: 'auto-handoff' })

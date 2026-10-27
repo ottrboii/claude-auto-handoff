@@ -938,6 +938,17 @@ describe('auto-handoff', () => {
     expect(calls.contexts[0]).toContain('past the 250k line')
   })
 
+  test('soft ceiling: skipped when the threshold is not above it, since the handoff fires first', { options: { threshold: 250_000 } }, async ($, on) => {
+    const calls = engine(on, { tokens: 260_000 })
+    await $.prompt.submit(typed('one'))
+    expect(calls.contexts.length).toBe(0)
+    // Turned off for the chain, no handoff will fire, so the warning is back.
+    await $.command.run({ command: 'handoff-threshold', args: 'off' })
+    await $.prompt.submit(typed('two'))
+    expect(calls.contexts.length).toBe(1)
+    expect(calls.contexts[0]).toContain('past the 250k line')
+  })
+
   test('hard ceiling: an unattended turn runs only handover tools; a typed prompt lifts it', async ($, on) => {
     const calls = engine(on, { tokens: 410_000, env: { AUTO_HANDOFF_DISABLE: 'x' } })
     await $.prompt.submit({ text: 'task done', origin: { kind: 'task-notification' } } as never)
