@@ -28,6 +28,25 @@ export const BRIEF_DIR = '.claude/state/auto-handoff'
 export type Config = { threshold: number; maxUnattended: number; briefTemplate: string; instructionsTemplate: string; ignoreFiles?: RegExp; viewer: string; idleMinutes: number; idleMinTokens: number; softCeiling: number; hardCeiling: number }
 export const DEFAULTS: Config = { threshold: 160_000, maxUnattended: 2, briefTemplate: '~/.claude/auto-handoff/brief.md', instructionsTemplate: '~/.claude/auto-handoff/instructions.md', viewer: 'tailscale:3846', idleMinutes: 60, idleMinTokens: 100_000, softCeiling: 250_000, hardCeiling: 400_000 }
 export const MIN_HEADROOM = 40_000
+// /handoff-threshold: a per-chain override, stored under BRIEF_DIR/overrides/<chain>.json so it
+// carries across handoffs of the same work. It may not sit closer than OVERRIDE_MARGIN to the
+// model's window or the hard ceiling: the handoff turn still needs room to write the brief.
+export const OVERRIDE_MARGIN = 30_000
+export type ThresholdArg = { kind: 'show' } | { kind: 'off' } | { kind: 'reset' } | { kind: 'set'; tokens: number } | { kind: 'bad' }
+/** "300k", "1.2m", "300000", "off", "reset", or blank (show). Anything else is bad. */
+export function parseThresholdArg(arg: string): ThresholdArg {
+  const a = arg.trim().toLowerCase().replace(/[_,\s]/g, '')
+  if (!a) return { kind: 'show' }
+  if (a === 'off' || a === 'reset') return { kind: a }
+  const m = /^(\d+(?:\.\d+)?)([km]?)$/.exec(a)
+  if (!m) return { kind: 'bad' }
+  const tokens = Math.round(Number(m[1]) * (m[2] === 'm' ? 1_000_000 : m[2] === 'k' ? 1_000 : 1))
+  return tokens > 0 ? { kind: 'set', tokens } : { kind: 'bad' }
+}
+/** The highest override allowed: the smaller of the window and the hard ceiling (0 = off), less the margin. */
+export function overrideCap(window: number, hardCeiling: number): number {
+  return Math.max(0, Math.min(window, hardCeiling > 0 ? hardCeiling : Infinity) - OVERRIDE_MARGIN)
+}
 // Each template's default, a file in the mod's templates/ folder.
 export const TEMPLATES = [['briefTemplate', 'brief.md'], ['instructionsTemplate', 'instructions.md']] as const
 export type TemplateKey = typeof TEMPLATES[number][0]

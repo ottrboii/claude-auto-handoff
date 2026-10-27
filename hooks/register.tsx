@@ -5,7 +5,7 @@ import type { Entry } from './viewer.ts'
 import { SERVER_JS, parseAddress } from './server.ts'
 import { isSpinning, panelTree } from './panel.tsx'
 import type { Line, Panel } from './panel.tsx'
-import { BRIEF_DIR, DEFAULTS, LAST_RESORT_INSTRUCTIONS, MIN_HEADROOM, SEED_PREFIX, TEMPLATES, expand, k, linkify, parseConfig, short } from './config.ts'
+import { BRIEF_DIR, DEFAULTS, LAST_RESORT_INSTRUCTIONS, MIN_HEADROOM, OVERRIDE_MARGIN, SEED_PREFIX, TEMPLATES, expand, k, linkify, overrideCap, parseConfig, parseThresholdArg, short } from './config.ts'
 import type { Config, TemplateKey } from './config.ts'
 
 // At the token threshold, Haiku writes a handoff brief, the mod runs /clear, then seeds the
@@ -206,7 +206,7 @@ async function handoff($: EngineInterface, sessionId: string, tokens: number, th
     const own = sessionId === seededSession && lineage ? lineage : await storedLineage($, sessionId)
     const messages = await $.session.messages()
     const facts = extractFacts(messages, cfg.ignoreFiles)
-    const { base, source } = await configured($)
+    const { base, source } = await configured($, sessionId)
     facts.handoffTokens = tokens
     facts.threshold = threshold
     facts.thresholdSource = threshold > base ? `${source} (${k(base)}), raised to leave ${k(MIN_HEADROOM)} above the starting size` : source
@@ -276,6 +276,8 @@ async function tryHandoff($: EngineInterface, sessionId: string, tokens: number,
   // module reloaded mid-handoff and the brief never landed. Retry instead of going quiet.
   if (fired === 'briefing') await log($, `stale briefing marker session=${sessionId} (mod reloaded mid-handoff); retrying`)
   else if (fired) return false
+  // `/handoff-threshold off` stops idle handoffs too, which no threshold check reaches.
+  if ((await configured($, sessionId)).off) return false
 
   const pane = await paneVar($)
   if (pane) {
@@ -321,7 +323,7 @@ async function paneVar($: EngineInterface): Promise<string | undefined> {
 // Whether tryHandoff would go ahead for this session. The tool gate refuses calls only then,
 // so a session the mod will not hand off (pane, loop guard, already fired) is never blocked.
 async function canHandOff($: EngineInterface, sessionId: string): Promise<boolean> {
-  if (unattended >= cfg.maxUnattended || await paneVar($)) return false
+  if (unattended >= cfg.maxUnattended || await paneVar($) || (await configured($, sessionId)).off) return false
   const fired = await $.store.get(`fired:${sessionId}`)
   return !fired || fired === 'briefing'
 }
@@ -404,17 +406,87 @@ function showHandedOff($: EngineInterface, fresh: number) {
   handedFrom = undefined
 }
 
-// The configured threshold and where it came from. The env var wins so a test run needs no
-// /config change; it also outlives the test in that shell, which is why the headroom warning names it.
-async function configured($: EngineInterface): Promise<{ base: number; source: string }> {
+// The chain a session belongs to: the id of the session that started it, or its own.
+async function chainOf$($: EngineInterface, sessionId: string): Promise<string> {
+  const own = sessionId === seededSession && lineage ? lineage : await storedLineage($, sessionId)
+  return own?.chain ?? sessionId
+}
+
+// /handoff-threshold's override for a chain. A file per chain rather than $.store, so it can be
+// read and fixed by hand. `reset` writes {}: the mod has no way to delete a file.
+type Override = { tokens: number } | { off: true }
+const overridePath = (home: string, chain: string) => `${home}/${BRIEF_DIR}/overrides/${chain}.json`
+async function readOverride($: EngineInterface, chain: string): Promise<Override | undefined> {
+  const home = await homeDir($)
+  if (!home) return undefined
+  try {
+    const v = JSON.parse(await $.fs.read(overridePath(home, chain)) as string) as { tokens?: unknown; off?: unknown }
+    if (v.off === true) return { off: true }
+    if (typeof v.tokens === 'number' && v.tokens > 0) return { tokens: v.tokens }
+  } catch {}
+  return undefined
+}
+
+// The configured threshold and where it came from. A session override wins, then the env var, so
+// a test run needs no /config change; the env var also outlives the test in that shell, which is
+// why the headroom warning names it. An override is clamped again here: the model may have
+// changed to a smaller window since it was set. `off` reports an infinite base.
+async function configured($: EngineInterface, sessionId: string): Promise<{ base: number; source: string; off?: true }> {
+  const o = await readOverride($, await chainOf$($, sessionId))
+  if (o && 'off' in o) return { base: Infinity, source: 'session override (off)', off: true }
+  if (o) {
+    const window = (await $.session.usage()).context.window
+    const cap = overrideCap(window, cfg.hardCeiling)
+    return o.tokens > cap ? { base: cap, source: `session override (${k(o.tokens)}, capped at ${k(cap)})` } : { base: o.tokens, source: 'session override' }
+  }
   const env = Number(await $.env.get('AUTO_HANDOFF_TOKENS'))
   return env > 0 ? { base: env, source: 'AUTO_HANDOFF_TOKENS' } : { base: cfg.threshold, source: 'threshold in /config' }
 }
 
 // A seeded session hands off no sooner than MIN_HEADROOM past its floor, whatever the threshold says.
 async function thresholdFor($: EngineInterface, sessionId: string): Promise<number> {
-  const { base } = await configured($)
+  const { base } = await configured($, sessionId)
   return sessionId === seededSession ? Math.max(base, (floor ?? 0) + MIN_HEADROOM) : base
+}
+
+// /handoff-threshold [300k | 1.2m | 300000 | off | reset]: sets, clears or shows the override for
+// this session's chain, and returns the reply. Bare, it shows the value in force and its source.
+async function thresholdCommand($: EngineInterface, args: string): Promise<string> {
+  const a = parseThresholdArg(args)
+  if (a.kind === 'bad') return `Not a threshold: "${args.trim()}". Use a token count (300k, 1.2m, 300000), off, reset, or nothing to see the value in force.`
+  const sessionId = await $.session.id()
+  const home = await homeDir($)
+  if (!home && a.kind !== 'show') return 'No home directory found, so the override could not be saved.'
+  const chain = await chainOf$($, sessionId)
+  const { context } = await $.session.usage()
+  const notes: string[] = []
+  if (a.kind !== 'show') {
+    let body = '{}'
+    if (a.kind === 'off') body = '{"off":true}'
+    if (a.kind === 'set') {
+      const cap = overrideCap(context.window, cfg.hardCeiling)
+      const limit = cfg.hardCeiling > 0 && cfg.hardCeiling < context.window ? `the ${k(cfg.hardCeiling)} hard ceiling` : `the model's ${k(context.window)} window`
+      if (cap <= 0) return `No room for an override: ${limit} less ${k(OVERRIDE_MARGIN)} for the brief leaves nothing.`
+      if (a.tokens > cap) notes.push(`${k(a.tokens)} capped at ${k(cap)}: ${limit} less ${k(OVERRIDE_MARGIN)} for the brief.`)
+      body = JSON.stringify({ tokens: Math.min(a.tokens, cap) })
+    }
+    await $.fs.write(overridePath(home as string, chain), body)
+    await log($, `override chain=${chain} session=${sessionId} ${a.kind === 'set' ? body : a.kind}`)
+  }
+  const { base, source, off } = await configured($, sessionId)
+  const now = context.tokens !== undefined ? ` The session is at ${k(context.tokens)}.` : ''
+  const ceilings = [cfg.softCeiling && `${k(cfg.softCeiling)} soft`, cfg.hardCeiling && `${k(cfg.hardCeiling)} hard`].filter(Boolean).join(' and ')
+  let head: string
+  if (off) {
+    head = 'auto-handoff is off for this chain: no threshold or idle handoffs.'
+    if (ceilings) notes.push(`The ${ceilings} ceilings still apply.`)
+  } else {
+    head = `auto-handoff threshold: ${k(base)} (${source}).`
+    if (a.kind === 'set' && cfg.softCeiling > 0 && base > cfg.softCeiling) notes.push(`That is past the ${k(cfg.softCeiling)} soft ceiling, which still warns once when the session crosses it.`)
+    if (a.kind === 'set' && context.tokens !== undefined && context.tokens >= base) notes.push(`The session is already past it, so it hands off at the end of the next turn.`)
+  }
+  if (a.kind !== 'show' && !inFlight && !pending) showPanel($, { header: { mark: 'done', text: off ? 'auto-handoff · off for this chain' : `auto-handoff · threshold ${k(base)}` }, steps: [] })
+  return [head + now, ...notes].join(' ')
 }
 
 // Once per seeded session, as its floor lands: when the configured threshold leaves less than
@@ -424,7 +496,7 @@ let warnedSession: string | undefined
 async function warnTightThreshold($: EngineInterface, sessionId: string) {
   if (floor === undefined || warnedSession === sessionId) return
   warnedSession = sessionId
-  const { base, source } = await configured($)
+  const { base, source } = await configured($, sessionId)
   const headroom = base - floor
   if (headroom >= MIN_HEADROOM) return
   await log($, `tight threshold session=${sessionId} threshold=${base} source=${source} floor=${floor} headroom=${headroom} effective=${floor + MIN_HEADROOM}`)
@@ -435,6 +507,11 @@ async function warnTightThreshold($: EngineInterface, sessionId: string) {
 
 export const register: Register = (on, options) => {
   cfg = parseConfig(options)
+  on('session.start', async ($, e, next) => {
+    await $.command.register({ name: 'handoff-threshold', description: 'Sets the auto-handoff threshold for this session and its handoffs: 300k, off, reset, or nothing to show it.', argumentHint: '[300k|off|reset]', immediate: true })
+    return next(e)
+  })
+  on('command.run', { command: 'handoff-threshold' }, async ($, e) => ({ text: await thresholdCommand($, e.args) }))
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     try {

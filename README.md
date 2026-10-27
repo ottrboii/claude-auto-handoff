@@ -57,6 +57,12 @@ Every setting is a row in `/config` under auto-handoff. They're stored in `~/.cl
 | `ignoreFiles` | blank | Regex for edited files to leave out of the brief, such as caches or synced state |
 | `viewer` | `tailscale:3846` | Where to serve the brief pages, as `host:port`. `tailscale` as the host means this machine's Tailscale IP, or `127.0.0.1` when Tailscale isn't set up. Leave blank for no server; the link is then the local file |
 
+For one session, without a restart:
+
+- `/handoff-threshold 300k` sets the threshold for this session (also `1.2m` or `300000`). It is kept per handoff chain in `~/.claude/state/auto-handoff/overrides/<chain>.json`, so the sessions this one hands off to keep it. It wins over `AUTO_HANDOFF_TOKENS` and `threshold`, and the brief's Handoff Numbers name it as `session override`. A value closer than 30k to the model's window or `hardCeiling` is capped there, and the reply says so; it also says when the value is past `softCeiling`, or below the session's current size, in which case the next turn hands off.
+- `/handoff-threshold off` stops threshold and idle handoffs for the chain. The soft and hard ceilings still apply.
+- `/handoff-threshold reset` goes back to the configured value. `/handoff-threshold` alone shows the value in force and where it came from.
+
 Environment variables:
 
 - `AUTO_HANDOFF_TOKENS=60000` overrides the threshold for one run, so you can watch a handoff without filling 160k first. It stays set in that shell after the test. Seeded sessions start near 45k, so a value under about 85k leaves them less than 40k of room: the mod then hands off at start + 40k instead and the panel shows `threshold 60k (AUTO_HANDOFF_TOKENS) leaves 15k ...` so you know the override is still live.
@@ -106,6 +112,7 @@ The mod hot-reloads when you save while it's loaded with `--plugin-dir`.
 
 ## Changelog
 
+- **0.10.0** `/handoff-threshold` sets, turns off, resets or shows the threshold for one session and the sessions it hands off to, capped 30k below the model's window and the hard ceiling.
 - **0.9.0** Idle resume: a message sent after an hour idle (`idleMinutes`) to a session of 100k or more (`idleMinTokens`) hands off first, and the message rides along in the seed, instead of re-reading the whole context after the prompt cache expired. Ceilings for when no handoff fires: past `softCeiling` (250k) the model is told once to say so and offer a handover; past `hardCeiling` (400k) a turn you did not start runs only Read, Write, Edit, Glob, Grep and Skill. 0 turns any of these off.
 - **0.8.6** On a machine without `sh` (Windows), the brief page is still written, and the link opens it as a local file instead of a server that never started. The viewer no longer shells out to `mkdir`.
 - **0.8.5** Windows support, from [@davidboomcycle](https://github.com/davidboomcycle) (#3). The mod falls back to `USERPROFILE` when `HOME` is unset, so briefs no longer land in `<project>/undefined/`. Where there is no `sh`, the log is written through `$.fs`. The tests pass on Windows. The viewer server still needs a POSIX shell.

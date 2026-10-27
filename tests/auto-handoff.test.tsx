@@ -297,6 +297,58 @@ describe('auto-handoff', () => {
     expect(calls.cleared).toBe(0)
   })
 
+  const OVERRIDE = '/home/test/.claude/state/auto-handoff/overrides/old-session.json'
+  const threshold = async ($: Parameters<TestBody>[0], args: string) => (await $.command.run({ command: 'handoff-threshold', args })).text ?? ''
+
+  test('/handoff-threshold wins over AUTO_HANDOFF_TOKENS and the threshold field', { options: { threshold: 100_000 } }, async ($, on) => {
+    const calls = engine(on, { tokens: 120_000, env: { AUTO_HANDOFF_TOKENS: '110000' } })
+    const reply = await threshold($, '150k')
+    expect(reply).toContain('auto-handoff threshold: 150k (session override).')
+    expect(JSON.parse(calls.written[OVERRIDE] ?? '')).toEqual({ tokens: 150_000 })
+    await $.turn.complete(TURN)
+    await settle(() => false)
+    expect(calls.cleared).toBe(0)
+    // Lowered below the session's size: the next turn hands off, and the brief names the override.
+    expect(await threshold($, '1.0e')).toContain('Not a threshold')
+    expect(await threshold($, '115000')).toContain('already past it')
+    await $.turn.complete(TURN)
+    await settle(() => calls.cleared > 0)
+    expect(calls.prompts[0]).toContain('session override')
+  })
+
+  test('the override carries over to the next session of the chain', { options: { threshold: 100_000 } }, async ($, on) => {
+    const calls = engine(on, { tokens: 120_000 })
+    await threshold($, '110k')
+    await $.turn.complete(TURN)
+    await settle(() => calls.cleared > 0)
+    await $.classic.SessionStart({ source: 'clear' })
+    await settle(() => calls.seeded.length > 0)
+    expect(await threshold($, '')).toContain('auto-handoff threshold: 110k (session override).')
+    expect(calls.written['/home/test/.claude/state/auto-handoff/overrides/new-session-1.json']).toBeUndefined()
+  })
+
+  test('/handoff-threshold off stops threshold handoffs; reset brings the configured value back', { options: { threshold: 100_000 } }, async ($, on) => {
+    const calls = engine(on, { tokens: 120_000 })
+    expect(await threshold($, 'off')).toContain('off for this chain')
+    await $.turn.complete(TURN)
+    await settle(() => false)
+    expect(calls.cleared).toBe(0)
+    expect(await threshold($, 'reset')).toContain('auto-handoff threshold: 100k (threshold in /config).')
+    expect(calls.written[OVERRIDE]).toBe('{}')
+    await $.turn.complete(TURN)
+    await settle(() => calls.cleared > 0)
+    expect(calls.cleared).toBe(1)
+  })
+
+  test('/handoff-threshold is capped below the model window and the hard ceiling', async ($, on) => {
+    const calls = engine(on, { tokens: 50_000 })
+    // The fake window is 200k; the hard ceiling is 400k, so the window binds.
+    const reply = await threshold($, '1m')
+    expect(reply).toContain('1000k capped at 170k')
+    expect(reply).toContain("the model's 200k window")
+    expect(JSON.parse(calls.written[OVERRIDE] ?? '')).toEqual({ tokens: 170_000 })
+  })
+
   test('the brief opens with the handoff instructions', async ($, on) => {
     const calls = engine(on, { tokens: 165_000 })
     await $.turn.complete(TURN)
